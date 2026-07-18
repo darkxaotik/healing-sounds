@@ -3,6 +3,7 @@ package com.HealingSounds;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.Range;
 
 @ConfigGroup("healingsounds")
 public interface HealingSoundsConfig extends Config
@@ -29,6 +30,7 @@ public interface HealingSoundsConfig extends Config
 		return true;
 	}
 
+	@Range(min = 0, max = 100)
 	@ConfigItem(
 		keyName = "soundVolume",
 		name = "Sound Volume",
@@ -62,6 +64,7 @@ public interface HealingSoundsConfig extends Config
 		return 166;
 	}
 
+	@Range(min = 2, max = 99)
 	@ConfigItem(
 		keyName = "minHealAmount",
 		name = "Minimum Heal Amount",
@@ -70,7 +73,7 @@ public interface HealingSoundsConfig extends Config
 	)
 	default int minHealAmount()
 	{
-		return 1;
+		return 2;
 	}
 
 }
