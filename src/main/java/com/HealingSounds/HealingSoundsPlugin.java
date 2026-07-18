@@ -17,12 +17,8 @@ import net.runelite.api.ItemID;
 import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
 
-import javax.sound.sampled.AudioInputStream;
-import javax.sound.sampled.AudioSystem;
-import javax.sound.sampled.Clip;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.BufferedInputStream;
+
+
 
 @Slf4j
 @PluginDescriptor(
@@ -42,9 +38,11 @@ public class HealingSoundsPlugin extends Plugin
 	@Inject
 	private HealingSoundsConfig config;
 
+	@Inject
+	private net.runelite.client.audio.AudioPlayer audioPlayer;
+
 	private int lastHp = 0;
 	private int lastInteractingTick = -1;
-	private Clip defaultAudioClip;
 
 	@Override
 	protected void startUp() throws Exception
@@ -54,17 +52,13 @@ public class HealingSoundsPlugin extends Plugin
 		{
 			lastHp = client.getBoostedSkillLevel(Skill.HITPOINTS);
 		}
-		loadHealingSound();
 	}
 
 	@Override
 	protected void shutDown() throws Exception
 	{
 		log.debug("Healing Sounds plugin stopped!");
-		if (defaultAudioClip != null)
-		{
-			defaultAudioClip.close();
-		}
+		
 	}
 
 
@@ -158,30 +152,6 @@ public class HealingSoundsPlugin extends Plugin
 		}
 	}
 
-	private void loadHealingSound()
-	{
-		try
-		{
-			// Try to load the healing sound from resources
-			InputStream soundStream = getClass().getResourceAsStream("/healing_sound.wav");
-			if (soundStream != null)
-			{
-				AudioInputStream audioInputStream = AudioSystem.getAudioInputStream(new BufferedInputStream(soundStream));
-				defaultAudioClip = AudioSystem.getClip();
-				defaultAudioClip.open(audioInputStream);
-				log.debug("Healing sound loaded successfully");
-			}
-			else
-			{
-				log.debug("Healing sound file not found in resources");
-			}
-		}
-		catch (Exception e)
-		{
-			log.debug("Error loading healing sound: {}", e.getMessage());
-		}
-	}
-
 
 	private void playHealingSound()
 	{
@@ -196,25 +166,11 @@ public class HealingSoundsPlugin extends Plugin
 			return;
 		}
 
-		Clip clipToPlay = defaultAudioClip;
-
 		try
 		{
-			if (clipToPlay != null)
-			{
-				// Stop if already playing and restart
-				if (clipToPlay.isRunning())
-				{
-					clipToPlay.stop();
-				}
-				clipToPlay.setFramePosition(0);
-				clipToPlay.start();
-				log.debug("Healing sound played");
-			}
-			else
-			{
-				log.debug("Audio clip not loaded, cannot play sound");
-			}
+			// Play the custom healing sound using RuneLite's AudioPlayer
+			audioPlayer.play(this.getClass(), "/healing_sound.wav", 1.0f);
+			log.debug("Healing sound played via AudioPlayer");
 		}
 		catch (Exception e)
 		{
