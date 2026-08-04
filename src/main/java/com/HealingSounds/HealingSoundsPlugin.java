@@ -219,11 +219,22 @@ public class HealingSoundsPlugin extends Plugin
 			return;
 		}
 
+		int volumeConfig = config.soundVolume();
+		if (volumeConfig <= 0)
+		{
+			return;
+		}
+
 		try
 		{
+			// Convert the linear volume (1-100) to a decibel scale (-40dB to 0dB) 
+			// because passing 0.0f to the player was treated as 0 dB (full volume).
+			float volume = Math.max(1f, Math.min(100f, volumeConfig));
+			float decibels = (float) (Math.log10(volume / 100f) * 20f);
+			
 			// Play the custom healing sound using RuneLite's AudioPlayer
-			audioPlayer.play(this.getClass(), "/healing_sound.wav", 1.0f);
-			log.debug("Healing sound played via AudioPlayer");
+			audioPlayer.play(this.getClass(), "/healing_sound.wav", decibels);
+			log.debug("Healing sound played via AudioPlayer with dB: {}", decibels);
 		}
 		catch (Exception e)
 		{
