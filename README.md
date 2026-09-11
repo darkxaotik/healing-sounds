@@ -8,7 +8,7 @@ A RuneLite plugin that plays a notification sound whenever you get healed by a *
 - **Supported Gear:** 
   - Sanguinesti Staff
   - Amulet of Blood Fury
-- **Smart Tracking:** Automatically ignores natural HP regeneration while you are out of combat, preventing annoying and unnecessary sound triggers.
+- **Smart Tracking:** Only alerts for HP increases that follow a recent player attack, while ignoring natural regeneration, room-completion restores, food, potions, and bandages.
 - **Customizable In-Game Sounds:** Choose to play a custom in-game sound effect ID instead of the default notification sound.
 
 ## Settings

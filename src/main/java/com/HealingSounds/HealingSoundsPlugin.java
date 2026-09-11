@@ -9,6 +9,7 @@ import net.runelite.api.Client;
 import net.runelite.api.Skill;
 import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.StatChanged;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -18,6 +19,7 @@ import net.runelite.api.events.GameTick;
 import net.runelite.api.ItemID;
 import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
+import java.util.Locale;
 
 @Slf4j
 @PluginDescriptor(
@@ -36,6 +38,8 @@ public class HealingSoundsPlugin extends Plugin
 	 * HP increases are assumed to come from food, not passive heals.
 	 */
 	private static final int CONSUMING_SUPPRESSION_TICKS = 3;
+	private static final int INVENTORY_CHANGE_SUPPRESSION_TICKS = 2;
+	private static final int PASSIVE_HEAL_WINDOW_TICKS = 2;
 
 	@Inject
 	private Client client;
@@ -61,6 +65,14 @@ public class HealingSoundsPlugin extends Plugin
 	 */
 	private int lastInventoryChangeTick = -1;
 
+	/**
+	 * The tick on which the player cast an Ancient Magicks spell (like Blood Barrage).
+	 */
+	private int lastBloodSpellTick = -1;
+	private int lastAttackTick = -1;
+	private int lastSoundTick = -1;
+	private int pendingHealTick = -1;
+
 	@Override
 	protected void startUp() throws Exception
 	{
@@ -78,6 +90,10 @@ public class HealingSoundsPlugin extends Plugin
 		lastConsumingAnimTick = -1;
 		lastInventoryChangeTick = -1;
 		lastInteractingTick = -1;
+		lastBloodSpellTick = -1;
+		lastAttackTick = -1;
+		lastSoundTick = -1;
+		pendingHealTick = -1;
 	}
 
 	@Subscribe
@@ -93,6 +109,15 @@ public class HealingSoundsPlugin extends Plugin
 		{
 			lastConsumingAnimTick = client.getTickCount();
 			log.debug("Consuming animation detected on tick {}", lastConsumingAnimTick);
+		}
+		// 1978 = Ancient single-target (Rush/Blitz), 1979 = Ancient multi-target (Burst/Barrage)
+		else if (actor.getAnimation() == 1978 || actor.getAnimation() == 1979)
+		{
+			markBloodSpell();
+		}
+		else if (actor.getAnimation() != AnimationID.IDLE && actor.getInteracting() != null)
+		{
+			lastAttackTick = client.getTickCount();
 		}
 	}
 
@@ -112,6 +137,30 @@ public class HealingSoundsPlugin extends Plugin
 		{
 			lastInteractingTick = client.getTickCount();
 		}
+
+		if (client.getLocalPlayer() != null && isBloodSpellAnimation(client.getLocalPlayer().getAnimation()))
+		{
+			markBloodSpell();
+		}
+
+		processPendingHeal();
+	}
+
+	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked event)
+	{
+		String option = event.getMenuOption() == null ? "" : event.getMenuOption().toLowerCase(Locale.ROOT);
+		String target = event.getMenuTarget() == null ? "" : event.getMenuTarget().toLowerCase(Locale.ROOT);
+		String menuText = option + " " + target;
+
+		if (menuText.contains("blood rush")
+			|| menuText.contains("blood blitz")
+			|| menuText.contains("blood burst")
+			|| menuText.contains("blood barrage"))
+		{
+			markBloodSpell();
+			log.debug("Blood spell cast selected");
+		}
 	}
 
 	@Subscribe
@@ -127,17 +176,35 @@ public class HealingSoundsPlugin extends Plugin
 
 		if (hpGain > 0 && hpGain >= config.minHealAmount())
 		{
-			// Ignore heals if we haven't been in combat recently (within the last 10 ticks).
-			// This filters out natural HP regeneration when out of combat.
+			// A passive weapon heal must follow a recent attack. Interaction alone is
+			// not sufficient because raid rooms can restore HP while an NPC is still targeted.
 			if (lastInteractingTick == -1 || client.getTickCount() - lastInteractingTick > 10)
 			{
 				lastHp = currentHp;
 				return;
 			}
 
+			int currentTick = client.getTickCount();
+
+			// Check the current animation as well as the recorded animation event.
+			// This covers drinking a brew on the same tick as an attack, where the
+			// attack animation can otherwise make the HP increase look like a weapon heal.
+			if (isCurrentlyConsuming())
+			{
+				log.debug("HP gain of {} suppressed — player is consuming an item", hpGain);
+				lastHp = currentHp;
+				return;
+			}
+
+			if (lastAttackTick == -1 || currentTick - lastAttackTick > PASSIVE_HEAL_WINDOW_TICKS)
+			{
+				log.debug("HP gain of {} suppressed — no recent player attack", hpGain);
+				lastHp = currentHp;
+				return;
+			}
+
 			// Filter out eating/drinking heals:
 			// If the player recently performed the CONSUMING animation, the heal is from food/potions.
-			int currentTick = client.getTickCount();
 			if (lastConsumingAnimTick != -1 && currentTick - lastConsumingAnimTick <= CONSUMING_SUPPRESSION_TICKS)
 			{
 				log.debug("HP gain of {} suppressed — player ate/drank recently (anim tick {}, current tick {})",
@@ -146,16 +213,24 @@ public class HealingSoundsPlugin extends Plugin
 				return;
 			}
 
-			// Secondary filter: if the inventory changed on this tick, the heal likely came
+			// Secondary filter: if the inventory changed recently, the heal likely came
 			// from consuming an item (food, potion, etc.), not a passive weapon/amulet effect.
-			if (lastInventoryChangeTick == currentTick)
+			if (lastInventoryChangeTick != -1 && currentTick - lastInventoryChangeTick <= INVENTORY_CHANGE_SUPPRESSION_TICKS)
 			{
-				log.debug("HP gain of {} suppressed — inventory changed on same tick {}", hpGain, currentTick);
+				log.debug("HP gain of {} suppressed — inventory changed recently (tick {} vs {})", hpGain, lastInventoryChangeTick, currentTick);
 				lastHp = currentHp;
 				return;
 			}
 
 			boolean shouldPlaySound = false;
+
+			// Filter out Blood Spells (Barrage, etc.) which heal independently of the weapons
+			if (lastBloodSpellTick != -1 && currentTick - lastBloodSpellTick <= 5)
+			{
+				log.debug("HP gain of {} suppressed — player cast Blood Spell recently", hpGain);
+				lastHp = currentHp;
+				return;
+			}
 
 			if (config.sanguinestStaff() && isSanguinestEquipped())
 			{
@@ -165,17 +240,68 @@ public class HealingSoundsPlugin extends Plugin
 
 			if (config.bloodFury() && isBloodFuryEquipped())
 			{
-				shouldPlaySound = true;
-				log.debug("Blood Fury passive heal detected: {} HP", hpGain);
+				// Ignore Blowpipe heals for Blood Fury since Blood Fury only works with melee
+				if (!isItemEquipped(ItemID.TOXIC_BLOWPIPE) && !isItemEquipped(ItemID.TOXIC_BLOWPIPE_EMPTY))
+				{
+					shouldPlaySound = true;
+					log.debug("Blood Fury passive heal detected: {} HP", hpGain);
+				}
 			}
 
 			if (shouldPlaySound)
 			{
-				playHealingSound();
+				pendingHealTick = currentTick;
 			}
 		}
 
 		lastHp = currentHp;
+	}
+
+	private void processPendingHeal()
+	{
+		int currentTick = client.getTickCount();
+		if (pendingHealTick == -1 || currentTick <= pendingHealTick)
+		{
+			return;
+		}
+
+		pendingHealTick = -1;
+
+		if (lastConsumingAnimTick != -1 && currentTick - lastConsumingAnimTick <= CONSUMING_SUPPRESSION_TICKS)
+		{
+			log.debug("Pending healing sound suppressed — player consumed an item");
+			return;
+		}
+
+		if (lastInventoryChangeTick != -1 && currentTick - lastInventoryChangeTick <= INVENTORY_CHANGE_SUPPRESSION_TICKS)
+		{
+			log.debug("Pending healing sound suppressed — inventory changed recently");
+			return;
+		}
+
+		if (lastBloodSpellTick != -1 && currentTick - lastBloodSpellTick <= 5)
+		{
+			log.debug("Pending healing sound suppressed — player cast Blood Spell recently");
+			return;
+		}
+
+		if (lastSoundTick == currentTick)
+		{
+			return;
+		}
+
+		playHealingSound();
+		lastSoundTick = currentTick;
+	}
+
+	private void markBloodSpell()
+	{
+		lastBloodSpellTick = client.getTickCount();
+	}
+
+	private boolean isBloodSpellAnimation(int animation)
+	{
+		return animation == 1978 || animation == 1979;
 	}
 
 	private boolean isSanguinestEquipped()
@@ -186,6 +312,12 @@ public class HealingSoundsPlugin extends Plugin
 	private boolean isBloodFuryEquipped()
 	{
 		return isItemEquipped(BLOOD_FURY);
+	}
+
+	private boolean isCurrentlyConsuming()
+	{
+		return client.getLocalPlayer() != null
+			&& client.getLocalPlayer().getAnimation() == AnimationID.CONSUMING;
 	}
 
 	private boolean isItemEquipped(int itemId)
@@ -248,4 +380,3 @@ public class HealingSoundsPlugin extends Plugin
 		return configManager.getConfig(HealingSoundsConfig.class);
 	}
 }
-
